@@ -46,7 +46,26 @@ impl Default for DirectProvider {
     }
 }
 
+/// Resolved configuration for routing a request directly to a provider,
+/// bypassing `app.warp.dev` entirely.
+#[derive(Debug, Clone)]
+pub struct DirectProviderConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub model_id: String,
+    pub extra_headers: Vec<(String, String)>,
+}
+
 impl DirectProvider {
+    pub fn config_for_model(&self, model: &DirectProviderModel) -> DirectProviderConfig {
+        DirectProviderConfig {
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            model_id: model.id.clone(),
+            extra_headers: self.default_headers.clone(),
+        }
+    }
+
     pub fn new(name: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -122,6 +141,13 @@ impl DirectProviderManager {
 
     pub fn providers(&self) -> &[DirectProvider] {
         &self.providers
+    }
+
+    /// Resolve a model `config_key` (UUID) to a `DirectProviderConfig` for
+    /// direct API calls, or `None` if the key belongs to a Warp-hosted model.
+    pub fn resolve_config(&self, config_key: &str) -> Option<DirectProviderConfig> {
+        let (provider, model) = self.find_by_config_key(config_key)?;
+        Some(provider.config_for_model(model))
     }
 
     pub fn find_by_config_key(&self, config_key: &str) -> Option<(&DirectProvider, &DirectProviderModel)> {
