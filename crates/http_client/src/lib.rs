@@ -1,8 +1,10 @@
 pub mod iap;
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use std::{fmt, future};
 
@@ -24,6 +26,89 @@ use warp_core::operating_system_info::OperatingSystemInfo;
 use warp_core::{execution_mode, report_error};
 
 use crate::iap::{IapTokenProvider, proxy_auth_header};
+
+// ── Egress allowlist ──────────────────────────────────────────────────────────
+//
+// Only hosts explicitly registered via `register_allowed_egress_host` (plus
+// loopback addresses) are permitted once `enable_egress_lockdown` is called.
+// Until that call, outbound requests to unexpected hosts are logged as warnings
+// but not blocked — this lets the rest of the app continue to work while the
+// custom-provider stack is being wired up (see PLAN.md Phase 6).
+
+static EGRESS_ALLOWED_HOSTS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+static EGRESS_LOCKDOWN: AtomicBool = AtomicBool::new(false);
+
+fn egress_allowed_hosts() -> &'static RwLock<HashSet<String>> {
+    EGRESS_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Register a host that outbound HTTP requests are allowed to reach.
+/// Call this whenever a `DirectProvider` is added or updated.
+pub fn register_allowed_egress_host(host: impl Into<String>) {
+    if let Ok(mut set) = egress_allowed_hosts().write() {
+        set.insert(host.into());
+    }
+}
+
+/// Remove a previously registered host from the egress allowlist.
+pub fn unregister_allowed_egress_host(host: &str) {
+    if let Ok(mut set) = egress_allowed_hosts().write() {
+        set.remove(host);
+    }
+}
+
+/// Enable strict egress enforcement. After this call any request to a host
+/// not in the allowlist (and not loopback) will be refused.
+/// Call this only after all allowed hosts have been registered and the local
+/// AI proxy is fully operational (PLAN.md Phase 6).
+pub fn enable_egress_lockdown() {
+    EGRESS_LOCKDOWN.store(true, Ordering::Relaxed);
+}
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn check_egress(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    if is_loopback(host) {
+        return true;
+    }
+    egress_allowed_hosts()
+        .read()
+        .map(|set| set.contains(host))
+        .unwrap_or(true) // allow on lock poison; don't crash
+}
+
+/// Returns `Ok(())` if the request is allowed, `Err` (with a logged message) if blocked.
+/// In non-lockdown mode, always returns `Ok` but logs a warning for unexpected hosts.
+fn check_egress_policy(url: &reqwest::Url) -> reqwest::Result<()> {
+    if check_egress(url) {
+        return Ok(());
+    }
+    let host = url.host_str().unwrap_or("<unknown>");
+    if EGRESS_LOCKDOWN.load(Ordering::Relaxed) {
+        log::error!(
+            "Egress blocked: request to '{}' is not in the allowed-hosts list. \
+             Configure a DirectProvider with this host to permit the connection.",
+            host
+        );
+        // Construct a reqwest::Error by routing through reqwest's own URL
+        // parser (IntoUrl is a sealed trait; we can't call it directly).
+        // An empty-string URL always fails to parse inside reqwest::Client::get.
+        Err(reqwest::Client::new()
+            .get("")
+            .build()
+            .expect_err("empty string must fail URL parsing inside reqwest"))
+    } else {
+        log::warn!(
+            "Unexpected egress to '{}': not in the allowed-hosts list. \
+             This will be hard-blocked once egress lockdown is enabled (PLAN.md Phase 6).",
+            host
+        );
+        Ok(())
+    }
+}
 
 pub mod headers {
     /// Custom Warp header indicating the version of the Warp app.
@@ -110,6 +195,10 @@ pub struct RequestBuilder<'a> {
     serialized_payload: Option<String>,
 
     prevent_sleep_reason: Option<&'static str>,
+
+    // Captured destination URL for egress checks on paths (e.g. SSE) that do
+    // not go through execute_inner.
+    destination_url: Option<reqwest::Url>,
 }
 
 pub struct Request {
@@ -186,12 +275,14 @@ impl Client {
         wrapped: reqwest::RequestBuilder,
         include_warp_headers: bool,
         iap_token: Option<String>,
+        destination_url: Option<reqwest::Url>,
     ) -> RequestBuilder<'_> {
         let mut builder = RequestBuilder {
             wrapped,
             client: self,
             serialized_payload: None,
             prevent_sleep_reason: None,
+            destination_url,
         };
 
         if include_warp_headers {
@@ -207,33 +298,38 @@ impl Client {
     }
 
     pub fn get<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
+        let parsed_url = url.clone().into_url().ok();
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());
-        self.builder(self.wrapped.get(url), include_warp_headers, iap_token)
+        self.builder(self.wrapped.get(url), include_warp_headers, iap_token, parsed_url)
     }
 
     pub fn post<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
+        let parsed_url = url.clone().into_url().ok();
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());
-        self.builder(self.wrapped.post(url), include_warp_headers, iap_token)
+        self.builder(self.wrapped.post(url), include_warp_headers, iap_token, parsed_url)
     }
 
     pub fn put<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
+        let parsed_url = url.clone().into_url().ok();
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());
-        self.builder(self.wrapped.put(url), include_warp_headers, iap_token)
+        self.builder(self.wrapped.put(url), include_warp_headers, iap_token, parsed_url)
     }
 
     pub fn patch<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
+        let parsed_url = url.clone().into_url().ok();
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());
-        self.builder(self.wrapped.patch(url), include_warp_headers, iap_token)
+        self.builder(self.wrapped.patch(url), include_warp_headers, iap_token, parsed_url)
     }
 
     pub fn delete<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
+        let parsed_url = url.clone().into_url().ok();
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());
-        self.builder(self.wrapped.delete(url), include_warp_headers, iap_token)
+        self.builder(self.wrapped.delete(url), include_warp_headers, iap_token, parsed_url)
     }
 
     /// Returns the IAP bearer token to attach to a request targeting
@@ -360,6 +456,9 @@ impl Client {
             prevent_sleep_reason,
         } = request;
 
+        // Egress check: warn (or block in lockdown mode) for unexpected destinations.
+        check_egress_policy(request.url())?;
+
         if let Some(before_response_send_fn) = &self.before_request_sent {
             before_response_send_fn(&request, &serialized_payload);
         }
@@ -451,6 +550,23 @@ impl<'a> RequestBuilder<'a> {
     /// Sends the request to the endpoint, which is assumed to be a streaming server-sent-events
     /// endpoint, and returns a corresponding `EventSource`.
     pub fn eventsource(self) -> EventSourceStream {
+        // Egress check before opening the SSE stream.
+        if let Some(url) = &self.destination_url {
+            if let Err(reqwest_err) = check_egress_policy(url) {
+                cfg_if::cfg_if! {
+                    if #[cfg(target_family = "wasm")] {
+                        return futures::stream::once(async move {
+                            Err(reqwest_eventsource::Error::Transport(reqwest_err))
+                        }).boxed_local();
+                    } else {
+                        return futures::stream::once(async move {
+                            Err(reqwest_eventsource::Error::Transport(reqwest_err))
+                        }).boxed();
+                    }
+                }
+            }
+        }
+
         cfg_if::cfg_if! {
             if #[cfg(target_family = "wasm")] {
                 let mut stream = self
@@ -747,7 +863,7 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Client {
             );
 
             let response = self
-                .builder(builder, include_warp_headers, iap_token)
+                .builder(builder, include_warp_headers, iap_token, None)
                 .send()
                 .await
                 .map_err(Box::new)?;
