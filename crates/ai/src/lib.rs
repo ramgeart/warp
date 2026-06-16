@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod api_keys;
+pub mod providers;
 pub mod aws_credentials;
 pub mod geap_credentials;
 #[cfg(not(target_family = "wasm"))]
