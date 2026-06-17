@@ -168,6 +168,13 @@ impl DirectProviderManager {
         for provider in &providers {
             register_provider_with_egress_allowlist(provider);
         }
+        // If the user has configured at least one provider, enforce strict
+        // egress: only registered provider hosts (plus loopback) may be
+        // reached. This structurally guarantees the client never talks to
+        // app.warp.dev or any other host once a direct provider is in use.
+        if !providers.is_empty() {
+            enable_egress_lockdown_if_supported();
+        }
         Self { providers }
     }
 
@@ -204,6 +211,8 @@ impl DirectProviderManager {
         } else {
             self.providers.push(provider);
         }
+        // Once any provider exists, lock egress down to allowed hosts only.
+        enable_egress_lockdown_if_supported();
         self.save_to_storage(ctx);
         ctx.emit(DirectProviderManagerEvent::ProvidersUpdated);
         ctx.notify();
@@ -292,6 +301,13 @@ fn register_provider_with_egress_allowlist(provider: &DirectProvider) {
     }
     #[cfg(target_arch = "wasm32")]
     let _ = provider;
+}
+
+/// Turn on strict egress enforcement (no-op on wasm, where there's no
+/// `http_client` egress layer). Idempotent.
+fn enable_egress_lockdown_if_supported() {
+    #[cfg(not(target_arch = "wasm32"))]
+    http_client::enable_egress_lockdown();
 }
 
 // ── Model discovery ───────────────────────────────────────────────────────────

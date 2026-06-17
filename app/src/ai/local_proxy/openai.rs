@@ -64,11 +64,15 @@ pub struct ChatCompletion {
 #[derive(Debug, Deserialize)]
 pub struct CompletionChoice {
     pub message: CompletionMessage,
+    /// Present in the wire format; not currently consumed by the proxy.
+    #[allow(dead_code)]
     pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CompletionMessage {
+    /// Present in the wire format; not currently consumed by the proxy.
+    #[allow(dead_code)]
     pub role: String,
     pub content: Option<String>,
     pub tool_calls: Option<Vec<AssistantToolCall>>,
