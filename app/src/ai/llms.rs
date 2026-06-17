@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent, CustomEndpoint, CustomEndpointModel};
+use ai::providers::{DirectProvider, DirectProviderManager, DirectProviderManagerEvent};
 pub use ai::LLMId;
 use parking_lot::FairMutex;
 use serde::{de, Deserialize, Serialize};
@@ -568,6 +569,10 @@ pub struct LLMPreferences {
     /// Rebuilt from scratch on every `ApiKeyManagerEvent::KeysUpdated`, so adds, edits, and
     /// removals all immediately propagate to the picker.
     custom_llms: Vec<LLMInfo>,
+    /// Synthetic `LLMInfo` entries built from `DirectProviderManager` entries.
+    /// Displayed as `{provider_name}/{model_id}` in the picker.
+    /// Rebuilt whenever `DirectProviderManagerEvent::ProvidersUpdated` fires.
+    direct_provider_llms: Vec<LLMInfo>,
 }
 
 impl LLMPreferences {
@@ -613,14 +618,26 @@ impl LLMPreferences {
             },
         );
 
+        // Rebuild direct-provider LLMs whenever providers are added/removed/updated.
+        ctx.subscribe_to_model(
+            &DirectProviderManager::handle(ctx),
+            |me, _event: &DirectProviderManagerEvent, ctx| {
+                me.rebuild_direct_provider_llms(ctx);
+                ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
+            },
+        );
+
         let base_llm_for_terminal_view = HashMap::new();
         let custom_llms = build_custom_llm_infos(ApiKeyManager::as_ref(ctx).keys());
+        let direct_provider_llms =
+            build_direct_provider_llm_infos(DirectProviderManager::as_ref(ctx).providers());
 
         let me = Self {
             models_by_feature,
             last_update: None,
             base_llm_for_terminal_view,
             custom_llms,
+            direct_provider_llms,
         };
 
         // In agent mode eval builds, eagerly kick off a fetch of the model list from the server
@@ -656,6 +673,7 @@ impl LLMPreferences {
                     .agent_mode
                     .info_for_id(llm_id)
                     .or_else(|| self.custom_llm_info_for_id_if_enabled(llm_id, app))
+                    .or_else(|| self.direct_provider_llm_info_for_id(llm_id))
                 {
                     return llm_info;
                 }
@@ -673,6 +691,7 @@ impl LLMPreferences {
                     .agent_mode
                     .info_for_id(&id)
                     .or_else(|| self.custom_llm_info_for_id_if_enabled(&id, app))
+                    .or_else(|| self.direct_provider_llm_info_for_id(&id))
             })
             .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
     }
@@ -702,6 +721,7 @@ impl LLMPreferences {
                     .coding
                     .info_for_id(&id)
                     .or_else(|| self.custom_llm_info_for_id_if_enabled(&id, app))
+                    .or_else(|| self.direct_provider_llm_info_for_id(&id))
             })
             .unwrap_or_else(|| self.models_by_feature.coding.default_llm_info())
     }
@@ -718,6 +738,7 @@ impl LLMPreferences {
             .iter()
             .filter(|llm| !matches!(llm.disable_reason, Some(DisableReason::AdminDisabled)))
             .chain(self.custom_llm_choices(app))
+            .chain(self.direct_provider_llm_choices())
     }
 
     /// Returns the set of LLMs available for coding.
@@ -729,6 +750,7 @@ impl LLMPreferences {
             .iter()
             .filter(|llm| !matches!(llm.disable_reason, Some(DisableReason::AdminDisabled)))
             .chain(self.custom_llm_choices(app))
+            .chain(self.direct_provider_llm_choices())
     }
 
     /// Returns the set of LLMs available for CLI agent.
@@ -737,6 +759,7 @@ impl LLMPreferences {
             .choices
             .iter()
             .chain(self.custom_llm_choices(app))
+            .chain(self.direct_provider_llm_choices())
     }
 
     /// Returns the `LLMInfo` for the CLI agent model.
@@ -756,6 +779,7 @@ impl LLMPreferences {
                 available
                     .info_for_id(&id)
                     .or_else(|| self.custom_llm_info_for_id_if_enabled(&id, app))
+                    .or_else(|| self.direct_provider_llm_info_for_id(&id))
             })
             .unwrap_or_else(|| available.default_llm_info())
     }
@@ -862,6 +886,22 @@ impl LLMPreferences {
     /// edits, and removals all propagate immediately.
     fn rebuild_custom_llms(&mut self, app: &AppContext) {
         self.custom_llms = build_custom_llm_infos(ApiKeyManager::as_ref(app).keys());
+    }
+
+    /// Rebuilds `direct_provider_llms` from `DirectProviderManager`. Called on every
+    /// `DirectProviderManagerEvent::ProvidersUpdated`.
+    fn rebuild_direct_provider_llms(&mut self, app: &AppContext) {
+        self.direct_provider_llms =
+            build_direct_provider_llm_infos(DirectProviderManager::as_ref(app).providers());
+    }
+
+    /// Iterator over LLMs from user-configured DirectProviders. Always shown (no feature-flag gate).
+    pub fn direct_provider_llm_choices(&self) -> std::slice::Iter<'_, LLMInfo> {
+        self.direct_provider_llms.iter()
+    }
+
+    fn direct_provider_llm_info_for_id(&self, id: &LLMId) -> Option<&LLMInfo> {
+        self.direct_provider_llms.iter().find(|info| &info.id == id)
     }
 
     fn sanitize_disabled_custom_model_preferences(&mut self, ctx: &mut ModelContext<Self>) {
@@ -1355,6 +1395,44 @@ fn custom_llm_info_from(endpoint: &CustomEndpoint, model: &CustomEndpointModel) 
         discount_percentage: None,
         context_window: LLMContextWindow::default(),
     }
+}
+
+/// Build `LLMInfo` entries for every model in every `DirectProvider`.
+/// Label format: `"{provider_name}/{model_id}"`.  The `id` is the model's
+/// `config_key` UUID, which `DirectProviderManager::resolve_config` uses to
+/// look up the provider and route the request directly.
+fn build_direct_provider_llm_infos(providers: &[DirectProvider]) -> Vec<LLMInfo> {
+    providers
+        .iter()
+        .filter(|p| !p.base_url.trim().is_empty())
+        .flat_map(|provider| {
+            provider
+                .models
+                .iter()
+                .filter(|m| !m.id.trim().is_empty() && !m.config_key.is_empty())
+                .map(move |model| {
+                    let label = model.display_id(&provider.name);
+                    LLMInfo {
+                        display_name: label.clone(),
+                        base_model_name: label,
+                        id: model.config_key.clone().into(),
+                        reasoning_level: None,
+                        usage_metadata: LLMUsageMetadata {
+                            request_multiplier: 1,
+                            credit_multiplier: None,
+                        },
+                        description: Some(format!("Direct · {}", provider.base_url)),
+                        disable_reason: None,
+                        vision_supported: false,
+                        spec: None,
+                        provider: LLMProvider::Unknown,
+                        host_configs: HashMap::new(),
+                        discount_percentage: None,
+                        context_window: LLMContextWindow::default(),
+                    }
+                })
+        })
+        .collect()
 }
 
 /// Gets the last cached LLM metadata.

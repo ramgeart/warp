@@ -1,4 +1,5 @@
 use ::ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent, ApiKeys};
+use ::ai::providers::{DirectProviderManager, DirectProviderManagerEvent};
 use chrono::{DateTime, Local};
 use enum_iterator::all;
 use itertools::Itertools;
@@ -34,6 +35,9 @@ use warpui::{
 
 use super::custom_inference_modal::{
     CustomEndpointModal, CustomEndpointModalEvent, CustomEndpointModalViewState,
+};
+use super::direct_provider_modal::{
+    DirectProviderModal, DirectProviderModalEvent,
 };
 use super::execution_profile_view::{ExecutionProfileView, ExecutionProfileViewEvent};
 use super::remove_custom_endpoint_confirmation_dialog::{
@@ -688,6 +692,11 @@ pub struct AISettingsPageView {
     pending_remove_custom_endpoint_index: Option<usize>,
     custom_inference_add_button: ViewHandle<ActionButton>,
     custom_endpoint_edit_buttons: Vec<ViewHandle<ActionButton>>,
+
+    // Direct inference providers
+    direct_provider_modal_state: ModalViewState<Modal<DirectProviderModal>>,
+    direct_provider_add_button: ViewHandle<ActionButton>,
+    direct_provider_edit_buttons: Vec<ViewHandle<ActionButton>>,
 }
 
 impl AISettingsPageView {
@@ -1098,6 +1107,21 @@ impl AISettingsPageView {
             me.sync_custom_endpoint_buttons(ctx);
             ctx.notify();
         });
+
+        // Rebuild provider edit buttons when DirectProviders change.
+        ctx.subscribe_to_model(
+            &DirectProviderManager::handle(ctx),
+            |me, _, _event: &DirectProviderManagerEvent, ctx| {
+                let ids: Vec<String> = DirectProviderManager::as_ref(ctx)
+                    .providers()
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect();
+                me.direct_provider_edit_buttons =
+                    Self::create_direct_provider_edit_buttons(ids, ctx);
+                ctx.notify();
+            },
+        );
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
             match event {
@@ -1708,6 +1732,40 @@ impl AISettingsPageView {
             ctx,
         );
 
+        // Direct inference provider modal setup
+        let direct_provider_modal_body =
+            ctx.add_typed_action_view(|ctx| DirectProviderModal::new(None, None, ctx));
+        ctx.subscribe_to_view(&direct_provider_modal_body, |me, _, event, ctx| {
+            me.handle_direct_provider_modal_event(event, ctx);
+        });
+        let direct_provider_modal_view = ctx.add_typed_action_view(|ctx| {
+            Modal::new(
+                Some("Direct Inference Provider".to_string()),
+                direct_provider_modal_body.clone(),
+                ctx,
+            )
+        });
+        ctx.subscribe_to_view(&direct_provider_modal_view, |me, _, event, ctx| {
+            if matches!(event, crate::modal::ModalEvent::Close) {
+                me.close_direct_provider_modal(ctx);
+            }
+        });
+        let direct_provider_modal_state = ModalViewState::new(direct_provider_modal_view);
+
+        let direct_provider_add_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Add Provider", SecondaryTheme)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(AISettingsPageAction::OpenAddDirectProviderModal);
+                })
+        });
+        let direct_provider_ids: Vec<String> = DirectProviderManager::as_ref(ctx)
+            .providers()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        let direct_provider_edit_buttons =
+            Self::create_direct_provider_edit_buttons(direct_provider_ids, ctx);
+
         let agent_toolbar_inline_editor = ctx.add_typed_action_view(|ctx| {
             AgentToolbarInlineEditor::new(AgentToolbarEditorMode::AgentView, ctx)
         });
@@ -1801,6 +1859,9 @@ impl AISettingsPageView {
             pending_remove_custom_endpoint_index: None,
             custom_inference_add_button,
             custom_endpoint_edit_buttons,
+            direct_provider_modal_state,
+            direct_provider_add_button,
+            direct_provider_edit_buttons,
         }
     }
 
@@ -1826,6 +1887,8 @@ impl AISettingsPageView {
             .is_visible()
         {
             Some(ChildView::new(&self.remove_custom_endpoint_confirmation_dialog).finish())
+        } else if self.direct_provider_modal_state.is_open() {
+            Some(self.direct_provider_modal_state.render())
         } else {
             None
         }
@@ -2102,6 +2165,167 @@ impl AISettingsPageView {
                 });
                 ctx.notify();
             }
+        }
+    }
+
+    // ── Direct inference providers ────────────────────────────────────────────
+
+    fn create_direct_provider_edit_buttons(
+        provider_ids: Vec<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Vec<ViewHandle<ActionButton>> {
+        provider_ids
+            .into_iter()
+            .map(|provider_id| {
+                ctx.add_typed_action_view(move |_| {
+                    let pid = provider_id.clone();
+                    ActionButton::new("Edit", SecondaryTheme)
+                        .with_icon(Icon::Pencil)
+                        .with_size(ButtonSize::Small)
+                        .on_click(move |ctx| {
+                            ctx.dispatch_typed_action(
+                                AISettingsPageAction::OpenEditDirectProviderModal(pid.clone()),
+                            );
+                        })
+                })
+            })
+            .collect()
+    }
+
+    fn show_add_direct_provider_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.direct_provider_modal_state
+            .view
+            .update(ctx, |modal, ctx| {
+                modal.body().update(ctx, |body, ctx| {
+                    body.prefill_new(ctx);
+                    body.on_open(ctx);
+                });
+            });
+        self.direct_provider_modal_state.open();
+        ctx.emit(AISettingsPageEvent::ShowModal);
+        ctx.notify();
+    }
+
+    fn show_edit_direct_provider_modal(&mut self, provider_id: String, ctx: &mut ViewContext<Self>) {
+        let provider = DirectProviderManager::as_ref(ctx)
+            .providers()
+            .iter()
+            .find(|p| p.id == provider_id)
+            .cloned();
+        let Some(provider) = provider else {
+            return;
+        };
+        self.direct_provider_modal_state
+            .view
+            .update(ctx, |modal, ctx| {
+                modal.body().update(ctx, |body, ctx| {
+                    body.prefill_edit(&provider, ctx);
+                    body.on_open(ctx);
+                });
+            });
+        self.direct_provider_modal_state.open();
+        ctx.emit(AISettingsPageEvent::ShowModal);
+        ctx.notify();
+    }
+
+    fn close_direct_provider_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.direct_provider_modal_state
+            .view
+            .update(ctx, |modal, ctx| {
+                modal.body().update(ctx, |body, ctx| {
+                    body.on_close(ctx);
+                });
+            });
+        self.direct_provider_modal_state.close();
+        ctx.emit(AISettingsPageEvent::HideModal);
+        ctx.notify();
+    }
+
+    fn handle_direct_provider_modal_event(
+        &mut self,
+        event: &DirectProviderModalEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            DirectProviderModalEvent::Close => {
+                self.close_direct_provider_modal(ctx);
+            }
+            DirectProviderModalEvent::Save { provider } => {
+                let provider = provider.clone();
+                let provider_id = provider.id.clone();
+                DirectProviderManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.upsert_provider(provider, ctx);
+                });
+                self.close_direct_provider_modal(ctx);
+
+                // Async-fetch models in background after save.
+                self.refresh_direct_provider_models(provider_id, ctx);
+
+                let window_id = ctx.window_id();
+                crate::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    let toast = crate::view_components::DismissibleToast::success(
+                        "Provider saved".to_string(),
+                    );
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
+                ctx.notify();
+            }
+            DirectProviderModalEvent::Remove { provider_id } => {
+                let id = provider_id.clone();
+                DirectProviderManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.remove_provider(&id, ctx);
+                });
+                self.close_direct_provider_modal(ctx);
+
+                let window_id = ctx.window_id();
+                crate::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    let toast = crate::view_components::DismissibleToast::success(
+                        "Provider removed".to_string(),
+                    );
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
+                ctx.notify();
+            }
+        }
+    }
+
+    fn refresh_direct_provider_models(&mut self, provider_id: String, ctx: &mut ViewContext<Self>) {
+        let provider = DirectProviderManager::as_ref(ctx)
+            .providers()
+            .iter()
+            .find(|p| p.id == provider_id)
+            .cloned();
+        let Some(provider) = provider else {
+            return;
+        };
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let base_url = provider.base_url.clone();
+            let api_key = provider.api_key.clone();
+            let extra_headers = provider.default_headers.clone();
+
+            ctx.spawn(
+                async move {
+                    ai::providers::fetch_models(&base_url, &api_key, &extra_headers).await
+                },
+                move |_me, result, ctx| {
+                    match result {
+                        Ok(model_ids) => {
+                            DirectProviderManager::handle(ctx).update(ctx, |manager, ctx| {
+                                manager.set_models(&provider_id, model_ids, ctx);
+                            });
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to fetch models for provider {}: {e:#}",
+                                provider_id
+                            );
+                        }
+                    }
+                    ctx.notify();
+                },
+            );
         }
     }
 
@@ -3057,6 +3281,11 @@ pub enum AISettingsPageAction {
     ConnectGrokSubscription,
     DisconnectGrokSubscription,
 
+    // Direct inference providers
+    OpenAddDirectProviderModal,
+    OpenEditDirectProviderModal(String),
+    RefreshDirectProviderModels(String),
+
     #[cfg(feature = "local_fs")]
     SetConversationLayout(crate::util::file::external_editor::settings::OpenConversationPreference),
     ToggleCloudHandoff,
@@ -3885,6 +4114,15 @@ impl TypedActionView for AISettingsPageView {
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
                 ctx.notify();
+            }
+            AISettingsPageAction::OpenAddDirectProviderModal => {
+                self.show_add_direct_provider_modal(ctx);
+            }
+            AISettingsPageAction::OpenEditDirectProviderModal(provider_id) => {
+                self.show_edit_direct_provider_modal(provider_id.clone(), ctx);
+            }
+            AISettingsPageAction::RefreshDirectProviderModels(provider_id) => {
+                self.refresh_direct_provider_models(provider_id.clone(), ctx);
             }
         }
     }
@@ -7850,6 +8088,88 @@ impl ApiKeysWidget {
         list.finish()
     }
 
+    fn render_direct_providers_list(
+        &self,
+        view: &AISettingsPageView,
+        appearance: &Appearance,
+        providers: &[ai::providers::DirectProvider],
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let chip_border = internal_colors::fg_overlay_3(theme);
+        let text_color = theme.active_ui_text_color();
+
+        if providers.is_empty() {
+            return Text::new_inline(
+                "No direct providers configured yet. Add one above.",
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(theme.nonactive_ui_text_color().into())
+            .finish();
+        }
+
+        let mut list = Flex::column().with_spacing(12.);
+        for (index, provider) in providers.iter().enumerate() {
+            let model_labels = provider
+                .models
+                .iter()
+                .map(|m| m.id.clone())
+                .filter(|s| !s.trim().is_empty());
+
+            let chips = super::render_model_chips(model_labels, appearance, text_color);
+
+            let name_text = Text::new_inline(
+                provider.name.clone(),
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_style(Properties::default().weight(Weight::Semibold))
+            .with_color(text_color.into())
+            .finish();
+
+            let url_text = Text::new_inline(
+                provider.base_url.clone(),
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(theme.nonactive_ui_text_color().into())
+            .finish();
+
+            let left = Flex::column()
+                .with_spacing(4.)
+                .with_child(name_text)
+                .with_child(url_text)
+                .with_child(chips)
+                .finish();
+
+            // Edit button (pre-created with correct provider ID wired in).
+            let edit_button = view
+                .direct_provider_edit_buttons
+                .get(index)
+                .map(|b| b.as_ref(app).render(app))
+                .unwrap_or_else(|| Empty::new().finish());
+
+            let row = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(Shrinkable::new(1., left).finish())
+                .with_child(edit_button)
+                .finish();
+
+            list.add_child(
+                Container::new(row)
+                    .with_uniform_padding(12.)
+                    .with_background(internal_colors::fg_overlay_1(theme))
+                    .with_border(Border::all(1.).with_border_fill(chip_border))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+                    .finish(),
+            );
+        }
+        list.finish()
+    }
+
     /// The "Connect SuperGrok subscription" row: label and description on the
     /// left, a Connect/Disconnect button on the right, and a "Connected on
     /// ..." status line underneath while a subscription is connected.
@@ -8086,6 +8406,53 @@ impl SettingsWidget for ApiKeysWidget {
                 .with_margin_top(16.)
                 .finish(),
             );
+        }
+
+        // Direct inference providers section — always visible, no flag gate.
+        {
+            let theme = appearance.theme();
+            let providers = DirectProviderManager::as_ref(app).providers().to_vec();
+            let dp_header = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Text::new_inline(
+                        "Direct inference providers",
+                        appearance.ui_font_family(),
+                        CONTENT_FONT_SIZE,
+                    )
+                    .with_color(theme.active_ui_text_color().into())
+                    .with_style(Properties::default().weight(Weight::Semibold))
+                    .finish(),
+                )
+                .with_child(view.direct_provider_add_button.as_ref(app).render(app))
+                .finish();
+
+            column.add_child(
+                Container::new(dp_header)
+                    .with_margin_top(24.)
+                    .with_margin_bottom(8.)
+                    .finish(),
+            );
+
+            let dp_desc = Text::new_inline(
+                "Call OpenAI-compatible endpoints directly from Warp, bypassing app.warp.dev. Models are fetched from /v1/models automatically.",
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(theme.nonactive_ui_text_color().into())
+            .soft_wrap(true)
+            .finish();
+
+            column.add_child(
+                Container::new(dp_desc)
+                    .with_margin_bottom(12.)
+                    .with_margin_right(styles::TOGGLE_WIDTH_MARGIN)
+                    .finish(),
+            );
+
+            column.add_child(self.render_direct_providers_list(view, appearance, &providers, app));
         }
 
         // Warp credit fallback toggle (shown when BYO or custom inference is enabled)

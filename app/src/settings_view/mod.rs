@@ -83,6 +83,7 @@ mod billing_and_usage_page_v2;
 mod code_page;
 mod custom_inference_modal;
 mod delete_environment_confirmation_dialog;
+pub(crate) mod direct_provider_modal;
 mod directory_color_add_picker;
 pub(crate) mod environments_page;
 mod execution_profile_view;

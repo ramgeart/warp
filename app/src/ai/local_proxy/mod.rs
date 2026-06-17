@@ -10,7 +10,6 @@ mod translate;
 
 use std::sync::Arc;
 
-use futures::StreamExt as _;
 use uuid::Uuid;
 use warp_multi_agent_api as api;
 
