@@ -137,8 +137,7 @@ pub async fn generate_multi_agent_output(
 
     // Route to the local proxy if the model belongs to a DirectProvider.
     if let Some(direct_config) = params.direct_provider.take() {
-        let proxy_stream =
-            crate::ai::local_proxy::run_direct_inference(direct_config, request);
+        let proxy_stream = crate::ai::local_proxy::run_direct_inference(direct_config, request);
         let output_stream = proxy_stream.take_until(cancellation_rx);
         return Ok(Box::pin(output_stream));
     }

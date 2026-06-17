@@ -1,6 +1,6 @@
 # PLAN.md — Warp local-first: sin telemetría + todas las features de IA por API propia
 
-> Estado: **en implementación** — rama `claude/bold-galileo-08lwrw`.
+> Estado: **fases 1-6 implementadas** — rama `claude/bold-galileo-08lwrw`.
 > Documento de ejecución: `AGENT.md`.
 
 ## 1. Objetivo
@@ -146,17 +146,25 @@ Si el host no está permitido → `Err(EgressBlocked)`. Esto es estructural, no 
 
 ## 8. Fases de implementación
 
-| Fase | Contenido | Archivos clave |
-|------|-----------|----------------|
-| **1** | Egress allowlist en http_client + telemetría/crash off en origen + test no-egress | `crates/http_client/src/lib.rs`, `app/src/settings/privacy.rs`, `app/src/bin/oss.rs` |
-| **2** | `DirectProvider` + `GET /v1/models` + model picker `providerName/modelName` + feature flag | `crates/ai/src/providers.rs` (NUEVO), `app/src/ai/llms.rs`, `crates/warp_features/src/lib.rs` |
-| **3** | `local_proxy`: traducción `multi-agent` → `chat/completions` SSE + tool loop | `crates/ai/src/local_proxy/` (NUEVO) |
-| **4** | Dispatch en `server_api.rs` + UI en `ai_page.rs` ("Probar conexión") | `app/src/server/server_api.rs`, `app/src/settings_view/ai_page.rs` |
-| **5** | Endpoints JSON simples (autocomplete, suggestions, code review, …) vía local_proxy | `crates/ai/src/local_proxy/json_endpoints.rs` (NUEVO) |
-| **6** | Modo local sin login + neutralizar auth/sync/update | `app/src/auth/`, `crates/onboarding/`, `app/src/lib.rs` |
-| **7** | Anthropic `messages` / OpenAI `responses` + endurecimiento + tests completos | `crates/ai/src/local_proxy/anthropic.rs` |
+| Fase | Estado | Contenido | Archivos clave |
+|------|--------|-----------|----------------|
+| **1** | ✅ hecho | Egress allowlist en http_client + telemetría/crash off en origen | `crates/http_client/src/lib.rs`, `app/src/settings/privacy.rs`, `app/src/bin/oss.rs` |
+| **2** | ✅ hecho | `DirectProvider` + `GET /v1/models` + feature flag | `crates/ai/src/providers.rs`, `crates/warp_features/src/lib.rs` |
+| **3** | ✅ hecho | `local_proxy`: traducción `multi-agent` → `chat/completions` + tool loop | `app/src/ai/local_proxy/` |
+| **4** | ✅ hecho | Model picker `providerName/modelName` + UI alta/edición de proveedores | `app/src/ai/llms.rs`, `app/src/settings_view/ai_page.rs`, `app/src/settings_view/direct_provider_modal.rs` |
+| **5** | ✅ hecho | Endpoints JSON (block title, code review, relevant files, query suggestions, predict) ruteados al proveedor activo | `crates/ai/src/providers.rs` (`simple_completion`), `app/src/server/server_api.rs`, `.../server_api/block.rs`, `.../server_api/ai.rs` |
+| **6** | ✅ hecho | Modo local sin login (`SkipFirebaseAnonymousUser`) + egress lockdown al configurar proveedor | `app/src/bin/oss.rs`, `crates/ai/src/providers.rs` |
+| **7** | pendiente | Anthropic `messages` / OpenAI `responses` + streaming SSE + tests completos | `app/src/ai/local_proxy/anthropic.rs` (futuro) |
 
-**Fase 1 es la base; Fases 3+4 son el núcleo funcional.**
+**Fase 1 es la base; Fases 3+4 son el núcleo funcional. Fases 1-6 implementadas.**
+
+### Notas de implementación (1-6)
+
+- **Intercepción Agent Mode**: en `generate_multi_agent_output` (`app/src/ai/agent/api/impl.rs`); si el modelo activo pertenece a un `DirectProvider`, se llama a `local_proxy::run_direct_inference` y nunca se contacta `app.warp.dev`.
+- **Endpoints JSON**: se interceptan dentro de los métodos de `ServerApi` consultando `ai::providers::active_direct_config()` (un registro global app-wide sincronizado por `LLMPreferences`). Si hay proveedor activo, usan `simple_completion`.
+- **Egress lockdown**: `http_client::enable_egress_lockdown()` se activa en cuanto existe ≥1 proveedor (al arrancar o al añadir el primero). Solo se permiten los hosts de los proveedores + loopback; el resto se bloquea estructuralmente.
+- **Modo local**: el build OSS activa `SkipFirebaseAnonymousUser`, arrancando directo al terminal sin login Warp ni usuario anónimo Firebase. Telemetría/crash/autoupdate ya `None` en `oss.rs`.
+- **Streaming**: Fase 3 usa respuestas no-streaming (`stream: false`) batched a `ResponseEvent`. El streaming incremental queda para la Fase 7.
 
 ## 9. Capacidades tras el cambio
 

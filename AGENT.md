@@ -3,6 +3,8 @@
 > Para el agente/persona que **implemente** `PLAN.md`: Warp **local-first** (sin conexiones externas salvo la API de IA configurada) con **cliente directo a OpenAI `chat/completions`**.
 > El **qué/por qué** está en `PLAN.md`; esto es el **cómo** en este repo. Léela completa antes de tocar código.
 
+> **Estado: fases 1-6 implementadas** (ver tabla en `PLAN.md §8`). Pendiente la fase 7 (Anthropic/`responses`, streaming SSE incremental, suite de tests). Lo ya hecho: egress allowlist+lockdown, telemetría/crash/autoupdate off, `DirectProvider` + descubrimiento de modelos, traducción Agent Mode↔`chat/completions` con tool loop, picker `providerName/modelName` + UI, endpoints JSON ruteados al proveedor activo, y arranque local sin login.
+
 ## 1. Misión en una frase
 
 Que Warp **solo** salga a la red hacia la **API de IA que el usuario configure** (todo lo demás bloqueado, **sin opt-in**), hable **directo** con esa API (OpenAI `chat/completions`, modelos vía `GET /v1/models`) **sin pasar por `app.warp.dev`**, y arranque en **modo local** sin login. Auth/sync/update se neutralizan ahora; vuelven como *custom* después.

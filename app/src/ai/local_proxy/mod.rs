@@ -47,22 +47,24 @@ async fn run_inference_inner(
 
     // ── Resolve IDs ────────────────────────────────────────────────────────────
 
-    let conversation_id = if request.metadata.as_ref().map_or(true, |m| m.conversation_id.is_empty()) {
+    let conversation_id = if request
+        .metadata
+        .as_ref()
+        .map_or(true, |m| m.conversation_id.is_empty())
+    {
         Uuid::new_v4().to_string()
     } else {
-        request
-            .metadata
-            .as_ref()
-            .unwrap()
-            .conversation_id
-            .clone()
+        request.metadata.as_ref().unwrap().conversation_id.clone()
     };
 
-    let (root_task_id, needs_create_task) =
-        match request.task_context.as_ref().and_then(|tc| tc.tasks.first()) {
-            Some(t) => (t.id.clone(), false),
-            None => (Uuid::new_v4().to_string(), true),
-        };
+    let (root_task_id, needs_create_task) = match request
+        .task_context
+        .as_ref()
+        .and_then(|tc| tc.tasks.first())
+    {
+        Some(t) => (t.id.clone(), false),
+        None => (Uuid::new_v4().to_string(), true),
+    };
 
     // ── Build tool results to echo back to client ──────────────────────────────
 
@@ -80,7 +82,11 @@ async fn run_inference_inner(
 
     let tool_defs = tool_defs::tool_definitions_for(&supported_tools);
 
-    let tools = if tool_defs.is_empty() { None } else { Some(tool_defs) };
+    let tools = if tool_defs.is_empty() {
+        None
+    } else {
+        Some(tool_defs)
+    };
 
     let oai_request = openai::ChatRequest {
         model: config.model_id.clone(),
@@ -92,7 +98,10 @@ async fn run_inference_inner(
 
     // ── Call the API ───────────────────────────────────────────────────────────
 
-    let url = format!("{}/v1/chat/completions", config.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.base_url.trim_end_matches('/')
+    );
 
     let client = Client::new();
     let mut builder = client.post(&url);
@@ -109,9 +118,11 @@ async fn run_inference_inner(
         }
     }
 
-    let response = builder.json(&oai_request).send().await.map_err(|e| {
-        AIApiError::Transport(e)
-    })?;
+    let response = builder
+        .json(&oai_request)
+        .send()
+        .await
+        .map_err(|e| AIApiError::Transport(e))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -119,9 +130,10 @@ async fn run_inference_inner(
         return Err(AIApiError::ErrorStatus(status, body));
     }
 
-    let completion: openai::ChatCompletion = response.json().await.map_err(|e| {
-        AIApiError::Transport(e)
-    })?;
+    let completion: openai::ChatCompletion = response
+        .json()
+        .await
+        .map_err(|e| AIApiError::Transport(e))?;
 
     // ── Build response events ──────────────────────────────────────────────────
 

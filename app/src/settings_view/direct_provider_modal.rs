@@ -181,9 +181,24 @@ impl DirectProviderModal {
     }
 
     fn read_provider(&self, app: &AppContext) -> DirectProvider {
-        let name = self.name_editor.as_ref(app).buffer_text(app).trim().to_string();
-        let base_url = self.url_editor.as_ref(app).buffer_text(app).trim().to_string();
-        let api_key = self.key_editor.as_ref(app).buffer_text(app).trim().to_string();
+        let name = self
+            .name_editor
+            .as_ref(app)
+            .buffer_text(app)
+            .trim()
+            .to_string();
+        let base_url = self
+            .url_editor
+            .as_ref(app)
+            .buffer_text(app)
+            .trim()
+            .to_string();
+        let api_key = self
+            .key_editor
+            .as_ref(app)
+            .buffer_text(app)
+            .trim()
+            .to_string();
 
         if let Some(ref id) = self.editing_id {
             if let Some(existing) = DirectProviderManager::as_ref(app)

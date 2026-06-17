@@ -26,7 +26,6 @@ use warpui::{AppContext, EntityId, SingletonEntity as _};
 use super::{AIAgentInput, MCPContext, MCPServer, RequestMetadata, Suggestions};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use ai::providers::{DirectProviderConfig, DirectProviderManager};
 use crate::ai::blocklist::{BlocklistAIPermissions, RequestInput, SessionContext};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::execution_profiles::AIExecutionProfileAppExt;
@@ -36,6 +35,7 @@ use crate::server::server_api::AIApiError;
 use crate::settings::AISettings;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::workspaces::user_workspaces::UserWorkspaces;
+use ai::providers::{DirectProviderConfig, DirectProviderManager};
 
 /// Unique, server-generated conversation-scoped token to be roundtripped to the API when sending
 /// requests that follow-up within a given conversation.
@@ -294,8 +294,8 @@ impl RequestParams {
             != crate::ai::execution_profiles::AskUserQuestionPermission::Never;
 
         // Check if the base model is a DirectProvider model and resolve its config.
-        let direct_provider = DirectProviderManager::as_ref(app)
-            .resolve_config(request_input.model_id.as_str());
+        let direct_provider =
+            DirectProviderManager::as_ref(app).resolve_config(request_input.model_id.as_str());
 
         let orchestration_enabled = ai_settings.is_orchestration_enabled(app)
             && BlocklistAIPermissions::as_ref(app)

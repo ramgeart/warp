@@ -36,9 +36,7 @@ use warpui::{
 use super::custom_inference_modal::{
     CustomEndpointModal, CustomEndpointModalEvent, CustomEndpointModalViewState,
 };
-use super::direct_provider_modal::{
-    DirectProviderModal, DirectProviderModalEvent,
-};
+use super::direct_provider_modal::{DirectProviderModal, DirectProviderModalEvent};
 use super::execution_profile_view::{ExecutionProfileView, ExecutionProfileViewEvent};
 use super::remove_custom_endpoint_confirmation_dialog::{
     RemoveCustomEndpointConfirmationDialog, RemoveCustomEndpointConfirmationDialogEvent,
@@ -1753,10 +1751,9 @@ impl AISettingsPageView {
         let direct_provider_modal_state = ModalViewState::new(direct_provider_modal_view);
 
         let direct_provider_add_button = ctx.add_typed_action_view(|_| {
-            ActionButton::new("Add Provider", SecondaryTheme)
-                .on_click(|ctx| {
-                    ctx.dispatch_typed_action(AISettingsPageAction::OpenAddDirectProviderModal);
-                })
+            ActionButton::new("Add Provider", SecondaryTheme).on_click(|ctx| {
+                ctx.dispatch_typed_action(AISettingsPageAction::OpenAddDirectProviderModal);
+            })
         });
         let direct_provider_ids: Vec<String> = DirectProviderManager::as_ref(ctx)
             .providers()
@@ -2206,7 +2203,11 @@ impl AISettingsPageView {
         ctx.notify();
     }
 
-    fn show_edit_direct_provider_modal(&mut self, provider_id: String, ctx: &mut ViewContext<Self>) {
+    fn show_edit_direct_provider_modal(
+        &mut self,
+        provider_id: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let provider = DirectProviderManager::as_ref(ctx)
             .providers()
             .iter()

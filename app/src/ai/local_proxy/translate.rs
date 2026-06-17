@@ -48,9 +48,9 @@ pub fn build_openai_messages(request: &api::Request) -> Vec<ChatMessage> {
                             tool_call_id: None,
                         });
                     }
-                    Some(
-                        api::request::input::user_inputs::user_input::Input::ToolCallResult(r),
-                    ) => {
+                    Some(api::request::input::user_inputs::user_input::Input::ToolCallResult(
+                        r,
+                    )) => {
                         if let Some(oai_msg) = input_tool_result_to_openai(r) {
                             messages.push(oai_msg);
                         }
@@ -97,9 +97,7 @@ fn warp_message_to_openai(msg: &api::Message) -> Vec<ChatMessage> {
         }
         Some(api::message::Message::ToolCallResult(tcr)) => {
             // A tool result: present as a "tool" role message.
-            history_tool_result_to_openai(tcr)
-                .into_iter()
-                .collect()
+            history_tool_result_to_openai(tcr).into_iter().collect()
         }
         Some(api::message::Message::SystemQuery(sq)) => {
             // Surface system queries (e.g. auto code diff) as user messages.
@@ -254,10 +252,7 @@ pub fn input_tool_result_to_openai(
 // ── Warp proto → OpenAI JSON tool call arguments ──────────────────────────────
 
 /// Parse an OpenAI tool call and build the corresponding Warp `ToolCall` proto.
-pub fn openai_tc_to_warp_tool_call(
-    tc: &AssistantToolCall,
-    task_id: &str,
-) -> Option<api::Message> {
+pub fn openai_tc_to_warp_tool_call(tc: &AssistantToolCall, task_id: &str) -> Option<api::Message> {
     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments).ok()?;
     use api::message::tool_call as tc_types;
 
@@ -398,7 +393,10 @@ fn format_shell_result(r: &api::RunShellCommandResult) -> String {
     use api::run_shell_command_result::Result as R;
     match &r.result {
         Some(R::CommandFinished(f)) => {
-            format!("Command: {}\nExit code: {}\n{}", r.command, f.exit_code, f.output)
+            format!(
+                "Command: {}\nExit code: {}\n{}",
+                r.command, f.exit_code, f.output
+            )
         }
         Some(R::LongRunningCommandSnapshot(s)) => {
             format!("Command: {} (still running)\n{}", r.command, s.output)
@@ -475,7 +473,11 @@ fn format_file_glob_v2_result(r: &api::FileGlobV2Result) -> String {
     use api::file_glob_v2_result::Result as R;
     match &r.result {
         Some(R::Success(s)) => {
-            let files: Vec<_> = s.matched_files.iter().map(|f| f.file_path.as_str()).collect();
+            let files: Vec<_> = s
+                .matched_files
+                .iter()
+                .map(|f| f.file_path.as_str())
+                .collect();
             if files.is_empty() {
                 "No files matched".to_string()
             } else {

@@ -189,7 +189,10 @@ impl DirectProviderManager {
         Some(provider.config_for_model(model))
     }
 
-    pub fn find_by_config_key(&self, config_key: &str) -> Option<(&DirectProvider, &DirectProviderModel)> {
+    pub fn find_by_config_key(
+        &self,
+        config_key: &str,
+    ) -> Option<(&DirectProvider, &DirectProviderModel)> {
         for provider in &self.providers {
             for model in &provider.models {
                 if model.config_key == config_key {
@@ -200,11 +203,7 @@ impl DirectProviderManager {
         None
     }
 
-    pub fn upsert_provider(
-        &mut self,
-        provider: DirectProvider,
-        ctx: &mut ModelContext<Self>,
-    ) {
+    pub fn upsert_provider(&mut self, provider: DirectProvider, ctx: &mut ModelContext<Self>) {
         register_provider_with_egress_allowlist(&provider);
         if let Some(existing) = self.providers.iter_mut().find(|p| p.id == provider.id) {
             *existing = provider;
@@ -258,7 +257,10 @@ impl DirectProviderManager {
     }
 
     fn load_from_storage(ctx: &mut ModelContext<Self>) -> Vec<DirectProvider> {
-        let json = match ctx.secure_storage().read_value(DIRECT_PROVIDERS_STORAGE_KEY) {
+        let json = match ctx
+            .secure_storage()
+            .read_value(DIRECT_PROVIDERS_STORAGE_KEY)
+        {
             Ok(json) => json,
             Err(e) => {
                 if !matches!(e, secure_storage::Error::NotFound) {
@@ -284,7 +286,10 @@ impl DirectProviderManager {
                 return;
             }
         };
-        if let Err(e) = ctx.secure_storage().write_value(DIRECT_PROVIDERS_STORAGE_KEY, &json) {
+        if let Err(e) = ctx
+            .secure_storage()
+            .write_value(DIRECT_PROVIDERS_STORAGE_KEY, &json)
+        {
             log::error!("Failed to save DirectProviders to secure storage: {e}");
         }
     }
@@ -356,11 +361,7 @@ pub async fn fetch_models(
     let response = builder.send().await?;
 
     if !response.status().is_success() {
-        anyhow::bail!(
-            "GET {} returned status {}",
-            url,
-            response.status()
-        );
+        anyhow::bail!("GET {} returned status {}", url, response.status());
     }
 
     let body: ModelsListResponse = response.json().await?;
