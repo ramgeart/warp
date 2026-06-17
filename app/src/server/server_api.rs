@@ -1154,6 +1154,30 @@ impl ServerApi {
         &self,
         request: &GetRelevantFiles,
     ) -> Result<GetRelevantFilesResponse, AIApiError> {
+        // If a DirectProvider is active, rank relevant files directly instead of
+        // routing through app.warp.dev.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = ::ai::providers::active_direct_config() {
+            const SYSTEM: &str = "You are a code search assistant. Given a query and a list of files (with their symbols), return only the file paths most relevant to the query, one path per line, copied verbatim from the list. Return nothing else.";
+            let mut user = format!("Query: {}\n\nFiles:\n", request.query);
+            for f in &request.files {
+                user.push_str(&format!("{}\n  symbols: {}\n", f.path, f.symbols));
+            }
+            let response = ::ai::providers::simple_completion(&config, SYSTEM, &user).await?;
+            // Keep only paths that were actually offered as candidates.
+            let candidates: std::collections::HashSet<&str> =
+                request.files.iter().map(|f| f.path.as_str()).collect();
+            let relevant_file_paths: Vec<String> = response
+                .lines()
+                .map(|l| l.trim().trim_start_matches("- ").trim())
+                .filter(|l| candidates.contains(*l))
+                .map(|l| l.to_string())
+                .collect();
+            return Ok(GetRelevantFilesResponse {
+                relevant_file_paths,
+            });
+        }
+
         let auth_token = self.get_or_refresh_access_token().await?;
 
         let request_builder = self.client.post(format!(
@@ -1181,6 +1205,37 @@ impl ServerApi {
         &self,
         request: &GenerateAMQuerySuggestionsRequest,
     ) -> Result<generate_am_query_suggestions::GenerateAMQuerySuggestionsResponse, AIApiError> {
+        // If a DirectProvider is active, suggest a next query directly instead
+        // of routing through app.warp.dev.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = ::ai::providers::active_direct_config() {
+            use generate_am_query_suggestions::{SimpleQuery, Suggestion};
+            const SYSTEM: &str = "Based on the recent terminal session, suggest one helpful next action the user might want an AI coding agent to do. Respond with only the suggested request as a single short sentence.";
+            let mut user = String::new();
+            if let Some(sys) = &request.system_context {
+                if !sys.is_empty() {
+                    user.push_str(&format!("System context: {sys}\n"));
+                }
+            }
+            user.push_str(&format!("Last exit code: {}\n", request.exit_code));
+            if !request.context_messages.is_empty() {
+                user.push_str("Recent blocks:\n");
+                for m in &request.context_messages {
+                    user.push_str(&format!("- {m}\n"));
+                }
+            }
+            let query = ::ai::providers::simple_completion(&config, SYSTEM, &user).await?;
+            return Ok(
+                generate_am_query_suggestions::GenerateAMQuerySuggestionsResponse {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    suggestion: Some(Suggestion::Simple(SimpleQuery {
+                        query: query.trim().to_string(),
+                        should_plan_task: false,
+                    })),
+                },
+            );
+        }
+
         let auth_token = self.get_or_refresh_access_token().await?;
 
         cfg_if::cfg_if! {
@@ -1217,6 +1272,30 @@ impl ServerApi {
         &self,
         request: &PredictAMQueriesRequest,
     ) -> Result<PredictAMQueriesResponse, AIApiError> {
+        // If a DirectProvider is active, predict directly instead of routing
+        // through app.warp.dev.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = ::ai::providers::active_direct_config() {
+            const SYSTEM: &str = "You autocomplete a user's partial natural-language request to an AI coding agent. Given recent context and the partial text, return only the single most likely completion of the partial text (the full intended query). Respond with only the completed query.";
+            let mut user = String::new();
+            if let Some(sys) = &request.system_context {
+                if !sys.is_empty() {
+                    user.push_str(&format!("System context: {sys}\n"));
+                }
+            }
+            if !request.context_messages.is_empty() {
+                user.push_str("Recent context:\n");
+                for m in &request.context_messages {
+                    user.push_str(&format!("- {m}\n"));
+                }
+            }
+            user.push_str(&format!("\nPartial query: {}", request.partial_query));
+            let suggestion = ::ai::providers::simple_completion(&config, SYSTEM, &user).await?;
+            return Ok(PredictAMQueriesResponse {
+                suggestion: suggestion.trim().to_string(),
+            });
+        }
+
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.client.post(format!(
             "{}/ai/predict_am_queries",

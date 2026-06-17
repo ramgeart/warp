@@ -623,6 +623,7 @@ impl LLMPreferences {
             &DirectProviderManager::handle(ctx),
             |me, _event: &DirectProviderManagerEvent, ctx| {
                 me.rebuild_direct_provider_llms(ctx);
+                me.sync_active_direct_config(ctx);
                 ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
             },
         );
@@ -646,6 +647,9 @@ impl LLMPreferences {
         // to avoid duplicate requests at startup.
         #[cfg(feature = "agent_mode_evals")]
         me.refresh_available_models(ctx);
+
+        // Publish the initial active provider config for auxiliary endpoints.
+        me.sync_active_direct_config(ctx);
 
         me
     }
@@ -895,6 +899,15 @@ impl LLMPreferences {
             build_direct_provider_llm_infos(DirectProviderManager::as_ref(app).providers());
     }
 
+    /// Resolve the active base model to a `DirectProviderConfig` (or `None` when
+    /// it's a Warp-hosted model) and publish it to the app-wide registry so the
+    /// auxiliary JSON AI endpoints can route directly too.
+    pub fn sync_active_direct_config(&self, app: &AppContext) {
+        let active = self.get_active_base_model(app, None);
+        let config = DirectProviderManager::as_ref(app).resolve_config(active.id.as_str());
+        ai::providers::set_active_direct_config(config);
+    }
+
     /// Iterator over LLMs from user-configured DirectProviders. Always shown (no feature-flag gate).
     pub fn direct_provider_llm_choices(&self) -> std::slice::Iter<'_, LLMInfo> {
         self.direct_provider_llms.iter()
@@ -1036,6 +1049,7 @@ impl LLMPreferences {
 
         if changed {
             self.trigger_snapshot_save(ctx);
+            self.sync_active_direct_config(ctx);
             ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
         }
     }

@@ -3756,6 +3756,9 @@ impl TypedActionView for AISettingsPageView {
                     profiles_model.set_base_model(profile_id, Some(id.clone()), ctx);
                     profiles_model.set_context_window_limit(profile_id, None, ctx);
                 });
+                // Keep the auxiliary-endpoint provider snapshot in sync with the
+                // newly selected base model.
+                LLMPreferences::as_ref(ctx).sync_active_direct_config(ctx);
                 self.sync_context_window_editor(ctx, true);
                 ctx.notify();
             }

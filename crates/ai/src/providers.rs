@@ -3,6 +3,8 @@
 ///
 /// Each provider is an OpenAI-compatible endpoint.  Models are discovered via
 /// `GET {base_url}/v1/models` and presented in the UI as `{name}/{model_id}`.
+use std::sync::{OnceLock, RwLock};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use warpui_core::{Entity, ModelContext, SingletonEntity};
@@ -10,6 +12,36 @@ use warpui_extras::secure_storage::{self, AppContextExt};
 
 /// Secure storage key for the full list of `DirectProvider` (including keys).
 pub const DIRECT_PROVIDERS_STORAGE_KEY: &str = "DirectProviders";
+
+// ── Active config registry ──────────────────────────────────────────────────
+//
+// The auxiliary JSON AI endpoints (block titles, code-review copy, relevant
+// files, query suggestions, …) run through `ServerApi`, which has no access to
+// the app/model context and therefore can't resolve which `DirectProvider` the
+// user has selected. To route those calls directly too, we keep an app-wide
+// snapshot of the active provider config here, refreshed by `LLMPreferences`
+// whenever the available models or the active base model change.
+
+static ACTIVE_DIRECT_CONFIG: OnceLock<RwLock<Option<DirectProviderConfig>>> = OnceLock::new();
+
+fn active_config_cell() -> &'static RwLock<Option<DirectProviderConfig>> {
+    ACTIVE_DIRECT_CONFIG.get_or_init(|| RwLock::new(None))
+}
+
+/// Store the resolved config for the currently active base model (or `None`
+/// when the active model is Warp-hosted). Called from `LLMPreferences`.
+pub fn set_active_direct_config(config: Option<DirectProviderConfig>) {
+    if let Ok(mut guard) = active_config_cell().write() {
+        *guard = config;
+    }
+}
+
+/// Returns the active `DirectProviderConfig`, if the user's selected base model
+/// belongs to a `DirectProvider`. Used by the auxiliary JSON AI endpoints to
+/// decide whether to bypass `app.warp.dev`.
+pub fn active_direct_config() -> Option<DirectProviderConfig> {
+    active_config_cell().read().ok().and_then(|g| g.clone())
+}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -319,4 +351,100 @@ pub async fn fetch_models(
     let mut ids: Vec<String> = body.data.into_iter().map(|m| m.id).collect();
     ids.sort();
     Ok(ids)
+}
+
+// ── Single-shot completion ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct SimpleChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct SimpleChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<SimpleChatMessage<'a>>,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct SimpleChatResponse {
+    choices: Vec<SimpleChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct SimpleChatChoice {
+    message: SimpleChatRespMessage,
+}
+
+#[derive(Deserialize)]
+struct SimpleChatRespMessage {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// Run a single, non-streaming chat completion against a direct provider and
+/// return the assistant's text content. Used by the auxiliary JSON AI
+/// endpoints (block titles, code-review copy, etc.) that only need a one-shot
+/// text response — no tools, no history.
+#[cfg(not(target_family = "wasm"))]
+pub async fn simple_completion(
+    config: &DirectProviderConfig,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> anyhow::Result<String> {
+    use http_client::Client;
+
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.base_url.trim_end_matches('/')
+    );
+
+    let mut messages = Vec::new();
+    if !system_prompt.is_empty() {
+        messages.push(SimpleChatMessage {
+            role: "system",
+            content: system_prompt,
+        });
+    }
+    messages.push(SimpleChatMessage {
+        role: "user",
+        content: user_prompt,
+    });
+
+    let body = SimpleChatRequest {
+        model: &config.model_id,
+        messages,
+        stream: false,
+    };
+
+    let client = Client::new();
+    let mut builder = client.post(&url);
+
+    if !config.api_key.is_empty() {
+        builder = builder.bearer_auth(&config.api_key);
+    }
+    for (name, value) in &config.extra_headers {
+        if let (Ok(n), Ok(v)) = (
+            http::header::HeaderName::from_bytes(name.as_bytes()),
+            http::header::HeaderValue::from_str(value),
+        ) {
+            builder = builder.header(n, v);
+        }
+    }
+
+    let response = builder.json(&body).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("POST {} returned status {}", url, response.status());
+    }
+
+    let parsed: SimpleChatResponse = response.json().await?;
+    let content = parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .unwrap_or_default();
+    Ok(content)
 }
