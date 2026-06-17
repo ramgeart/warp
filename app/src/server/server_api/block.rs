@@ -142,6 +142,20 @@ impl BlockClient for ServerApi {
         &self,
         request: GenerateBlockTitleRequest,
     ) -> Result<GenerateBlockTitleResponse, anyhow::Error> {
+        // If a DirectProvider is active, generate the title directly instead of
+        // routing through app.warp.dev.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = ::ai::providers::active_direct_config() {
+            const SYSTEM: &str = "You generate a short, descriptive title (3-6 words) for a terminal command and its output. Respond with only the title, no quotes or punctuation.";
+            let user = format!(
+                "Command:\n{}\n\nOutput:\n{}",
+                request.command, request.output
+            );
+            let title = ::ai::providers::simple_completion(&config, SYSTEM, &user).await?;
+            let title = title.trim().trim_matches('"').to_string();
+            return Ok(GenerateBlockTitleResponse { title });
+        }
+
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.client.post(format!(
             "{}/ai/generate_block_title",

@@ -1394,6 +1394,7 @@ pub(crate) fn initialize_app(
     });
 
     ctx.add_singleton_model(AntivirusInfo::new);
+    ctx.add_singleton_model(::ai::providers::DirectProviderManager::new);
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "crash_reporting")] {

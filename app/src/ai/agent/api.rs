@@ -35,6 +35,7 @@ use crate::server::server_api::AIApiError;
 use crate::settings::AISettings;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::workspaces::user_workspaces::UserWorkspaces;
+use ai::providers::{DirectProviderConfig, DirectProviderManager};
 
 /// Unique, server-generated conversation-scoped token to be roundtripped to the API when sending
 /// requests that follow-up within a given conversation.
@@ -130,6 +131,10 @@ pub struct RequestParams {
     pub parent_agent_id: Option<String>,
     /// The display name for this agent (e.g. "Agent 1"), assigned by the orchestrator.
     pub agent_name: Option<String>,
+    /// When set, route this request directly to the provider instead of via
+    /// `app.warp.dev`. Populated only if the selected model belongs to a
+    /// `DirectProvider` configured by the user.
+    pub direct_provider: Option<DirectProviderConfig>,
 }
 
 pub type Event = Result<warp_multi_agent_api::ResponseEvent, Arc<AIApiError>>;
@@ -288,6 +293,10 @@ impl RequestParams {
             .get_ask_user_question_setting(app, terminal_view_id)
             != crate::ai::execution_profiles::AskUserQuestionPermission::Never;
 
+        // Check if the base model is a DirectProvider model and resolve its config.
+        let direct_provider =
+            DirectProviderManager::as_ref(app).resolve_config(request_input.model_id.as_str());
+
         let orchestration_enabled = ai_settings.is_orchestration_enabled(app)
             && BlocklistAIPermissions::as_ref(app)
                 .get_run_agents_setting(app, terminal_view_id)
@@ -340,6 +349,7 @@ impl RequestParams {
             supported_tools_override: request_input.supported_tools_override.clone(),
             parent_agent_id: None,
             agent_name: None,
+            direct_provider,
         }
     }
 }

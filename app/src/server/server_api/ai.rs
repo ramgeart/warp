@@ -2640,6 +2640,33 @@ impl AIClient for ServerApi {
         &self,
         request: GenerateCodeReviewContentRequest,
     ) -> Result<GenerateCodeReviewContentResponse, anyhow::Error> {
+        // If a DirectProvider is active, generate the content directly instead
+        // of routing through app.warp.dev.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = ::ai::providers::active_direct_config() {
+            use crate::ai::generate_code_review_content::api::OutputType;
+            let system = match request.output_type {
+                OutputType::CommitMessage => "Write a concise, conventional git commit message for the following diff. Respond with only the commit message.",
+                OutputType::PrTitle => "Write a concise pull request title for the following diff. Respond with only the title.",
+                OutputType::PrDescription => "Write a clear, well-structured pull request description in Markdown for the following diff.",
+            };
+            let mut user = String::new();
+            if !request.branch_name.is_empty() {
+                user.push_str(&format!("Branch: {}\n", request.branch_name));
+            }
+            if !request.commit_messages.is_empty() {
+                user.push_str("Commit messages:\n");
+                for m in &request.commit_messages {
+                    user.push_str(&format!("- {m}\n"));
+                }
+            }
+            user.push_str(&format!("\nDiff:\n{}", request.diff));
+            let content = ::ai::providers::simple_completion(&config, system, &user).await?;
+            return Ok(GenerateCodeReviewContentResponse {
+                content: content.trim().to_string(),
+            });
+        }
+
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.client.post(format!(
             "{}/ai/generate_code_review_content",

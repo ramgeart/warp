@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
+use warp_core::features::FeatureFlag;
 use warp_core::AppId;
 
 // Simple wrapper around warp::run() for Warp OSS builds.
@@ -15,12 +16,19 @@ fn main() -> Result<()> {
             logfile_name: "warp-oss.log".into(),
             server_config: WarpServerConfig::production(),
             oz_config: OzConfig::production(),
+            // Telemetry, crash reporting, and autoupdate are disabled for the
+            // OSS build — no analytics or background phone-home.
             telemetry_config: None,
             crash_reporting_config: None,
             autoupdate_config: None,
             mcp_static_config: None,
         },
     );
+    // Local-boot mode: start straight into the terminal without requiring a
+    // Warp login (and without creating a Firebase anonymous user). AI features
+    // are served by user-configured Direct Inference Providers, so no Warp
+    // account is needed.
+    state = state.with_additional_features(&[FeatureFlag::SkipFirebaseAnonymousUser]);
     if cfg!(debug_assertions) {
         state = state.with_additional_features(warp_core::features::DEBUG_FLAGS);
     }

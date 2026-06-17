@@ -5,6 +5,7 @@ pub mod geap_credentials;
 #[cfg(not(target_family = "wasm"))]
 pub mod grok_subscription;
 pub mod llm_id;
+pub mod providers;
 
 pub use llm_id::LLMId;
 pub mod diff_validation;

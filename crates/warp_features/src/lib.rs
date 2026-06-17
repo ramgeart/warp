@@ -883,6 +883,12 @@ pub enum FeatureFlag {
     /// Gates Gemini Enterprise (GEAP) BYOLLM, which lets users
     /// route eliglible models to GEAP instead of Warp-managed inference.
     GeminiEnterprise,
+
+    /// Enables Direct Inference Providers: user-configured AI API endpoints
+    /// (OpenAI-compatible base URL) that the client calls directly, bypassing
+    /// the Warp backend entirely. Models are discovered via GET /v1/models and
+    /// shown in the picker as "providerName/modelId".
+    DirectInferenceProviders,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
